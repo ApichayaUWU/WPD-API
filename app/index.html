@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Photo</title>
+</head>
+<body>
+    <h1>Upload Photo</h1>
+    <form id="uploadForm">
+        <input type="file" id="imageFile" name="image" accept="image/*" required>
+        <button type="submit">Upload</button>
+    </form>
+    <div id="response"></div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            const formData = new FormData();
+            const fileInput = document.getElementById('imageFile');
+            formData.append('image', fileInput.files[0]);
+
+            try {
+                const response = await fetch('/gemini', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.text();
+                document.getElementById('response').innerText = result;
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('response').innerText = 'Error uploading image';
+            }
+        });
+    </script>
+</body>
+</html>
