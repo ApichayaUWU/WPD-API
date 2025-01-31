@@ -127,7 +127,7 @@ main = S.scotty 3000 $ do
     let uriPath = pack (unpack uri ) -- why this code?
     liftIO $ putStrLn $ "Image URI: " ++ unpack uriPath
     -- Send the image and prompt to the model
-    generatedText <- liftIO $ generateContent uriPath "Describe the image with a creative description."
+    generatedText <- liftIO $ generateContent uriPath "อาหารในรูปคืออะไร?"
 
     -- Print the generated text
     S.text generatedText
