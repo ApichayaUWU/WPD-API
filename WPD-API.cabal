@@ -77,4 +77,24 @@ executable WPD-API
     default-language: Haskell2010
 
     -- Dependencies
-    build-depends: base >=4.7 && <5, scotty, http-conduit, req, aeson, text, bytestring, time, http-types, http-client, directory, http-client-tls
+    build-depends: base >=4.7 && <5
+                    , scotty
+                    , http-conduit
+                    , req
+                    , aeson
+                    , text
+                    , bytestring
+                    , time
+                    , http-types
+                    , http-client
+                    , directory
+                    , http-client-tls
+                    , wai-middleware-static
+                    , wai-extra
+                    , dotenv
+                    , filepath
+                    , base64-bytestring
+                    , cassava
+                    , mr-env
+                    , vector
+                    , unordered-containers

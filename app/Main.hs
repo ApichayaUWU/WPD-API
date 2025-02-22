@@ -1,151 +1,127 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# OPTIONS_GHC -Wno-name-shadowing #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
-import Web.Scotty as S ( get, post, scotty, text, liftIO, put )
-import Network.HTTP.Client.MultipartFormData (formDataBody, partFileSource, partLBS)
-import Network.HTTP.Client as C (RequestBody, Response(..), httpLbs, parseRequest, newManager, Request (requestBody))
-import Network.HTTP.Client.TLS (tlsManagerSettings)
-import Network.HTTP.Simple
-    ( parseRequest,
-      getResponseBody,
-      httpLBS,
-      setRequestBodyLBS,
-      setRequestHeader,
-      setRequestMethod )
-import Data.Aeson (encode, decode', (.:), Value(..), Object)
-import Control.Monad.IO.Class (liftIO)
-import qualified Data.ByteString.Lazy.Char8 as L8
-import GHC.Generics (Generic)
-import Data.Text.Lazy (Text, pack, unpack)
-import Data.Aeson.Types
-import Data.Text.Lazy.Encoding (decodeUtf8)
+import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Lazy as BL
-import System.Environment (getEnv)
-import System.Directory (doesFileExist)
-import Control.Monad (ap)
+import qualified Data.Csv as CSV
+import qualified Data.Text as T
+import qualified Data.Text.Lazy as TL
+import Data.Aeson
+import qualified Data.Aeson.KeyMap as KM
+import GHC.Generics
+import Network.HTTP.Simple
+import System.FilePath
+import Control.Monad.IO.Class
+import Control.Monad (forM, void)
+import System.Environment (getEnv, setEnv)
+import Configuration.Dotenv (loadFile, defaultConfig)
+import System.Directory.Internal.Prelude (getEnv)
+import Data.Text.Encoding (encodeUtf8, decodeUtf8)
+import System.Environment.MrEnv (envAsBool, envAsInt, envAsInteger, envAsString)
+import MyEnvi (setEnvironment)
+import Web.Scotty as S (get, put, scotty, text, liftIO, param, rescue, file, middleware, files, json, setHeader)
+import qualified Data.ByteString as BS
+import Network.HTTP.Client (Response(responseBody))
+import Network.HTTP.Simple (getResponseBody)
+import qualified Data.Vector as V
 
+-- Data types
+data Item = Item
+    { name :: T.Text
+    , imagePath :: T.Text
+    , sugar :: Maybe Double
+    , carb :: Maybe Double
+    , openai_sugar :: Maybe Double
+    , gemini_sugar :: Maybe Double
+    , openai_carb :: Maybe Double
+    , gemini_carb :: Maybe Double
+    } deriving (Show, Generic)
 
-data Part = Part
-  { text :: String
-  } deriving (Show, Generic)
+instance FromJSON Item
+instance ToJSON Item
 
-data Content = Content
-  { parts :: [Part]
-  } deriving (Show, Generic)
+data OpenAIResponse = OpenAIResponse
+    { openaiSugar :: Maybe Double
+    , openaiCarb :: Maybe Double
+    , explain :: T.Text
+    } deriving (Show, Generic)
 
-data Body = Body
-  { contents :: [Content]
-  } deriving (Show, Generic)
+instance FromJSON OpenAIResponse
+instance ToJSON OpenAIResponse
 
-instance ToJSON Part
-instance FromJSON Part
+-- Configuration
+data Config = Config
+    { openaiApiKey :: T.Text
+    , geminiApiKey :: T.Text
+    } deriving (Show)
 
-instance ToJSON Content
-instance FromJSON Content
+-- Helper functions
+encodeImage :: FilePath -> IO T.Text
+encodeImage path = do
+    contents <- BL.readFile path
+    return $ T.pack $ show $ B64.encode $ BL.toStrict contents
 
-instance ToJSON Body
-instance FromJSON Body
+foodsPrompt :: T.Text -> T.Text
+foodsPrompt name = "อาหารรูปนี้คือ " <> name <> "ให้ประเมินปริมาตรมาในหน่วย ml จากนั้น ให้ประเมินค่าน้ำตาลจากปริมตรที่ประเมินไว้ก่อนหน้า หากประเมินมาเป็นช่วงให้เลือกตอบ 1 ค่าเท่านั้น และอธิบายว่าทำไมถึงประเมินค่าได้แบบนั้น ตอบในรูปแบบตามที่กำหนดข้างล่าง ชื่อเมนู: ปริมาตร: น้ำตาล: อธิบายวิธีคิด:"
 
-exampleBody :: Body
-exampleBody = Body
-  [ Content
-      [ Part "อาหารในรูปคืออะไร" ]
-  ]
+makeOpenaiBody :: T.Text -> T.Text -> Value
+makeOpenaiBody prompt encodeImg = 
+  object [ "model" .= ("gpt-4o-mini" :: String)
+    , "messages" .= [object ["role" .= ("user" :: String), "content" .= [object
+                        [ "type" .= ("text" :: T.Text),
+                          "text" .= prompt
+                        ],
+                       object
+                        [ "type" .= ("image_url" :: String),
+                          "image_url"
+                            .= object ["url" .= T.pack ("data:image/jpeg;base64," ++ T.unpack  encodeImg)]
+                        ]
+                    ]]]
+    , "temperature" .= (0.7 :: Double)
+    ]
 
-makeBody :: Text -> Text -> Value
-makeBody fileUri prompt = 
-  object ["contents" .= [object ["parts" .= [object ["text" .= prompt], object ["file_data" .= object ["mime_type" .= ("image/jpeg" :: Text), "file_uri" .= fileUri]]]]]]
+openaiRequest :: Value -> T.Text -> IO (Maybe T.Text)
+openaiRequest body apiKey = do
+    let request = setRequestMethod "POST"
+                . setRequestSecure True   
+                . setRequestPort 443      
+                . setRequestHost "api.openai.com"
+                . setRequestPath "/v1/chat/completions"
+                . setRequestHeader "Authorization" ["Bearer " <> encodeUtf8 apiKey]
+                . setRequestHeader "Content-Type" ["application/json"]
+                . setRequestBodyJSON body
+                $ defaultRequest
+    response <- httpJSON request
+    let responseBody = getResponseBody response :: Value
+    case responseBody of
+        Object obj -> case KM.lookup "choices" obj of
+            Just (Array choices) -> case V.toList choices of
+                (Object choice : _) -> case KM.lookup "message" choice of
+                    Just (Object message) -> case KM.lookup "content" message of
+                        Just (String content) -> return (Just content)
+                        _ -> error "Failed to parse content"
+                    _ -> error "Failed to parse message"
+                _ -> error "Failed to parse choices"
+            _ -> error "Failed to parse choices"
+        _ -> error "Failed to parse response"
 
-
-apiKey :: Text
-apiKey = pack "AIzaSyC0xCqsrg7x4HyRuRJPLaIZYvHqHKxsgm0"
-
--- Function to upload the image and get the file URI
-uploadImage :: FilePath -> IO Text
-uploadImage imagePath = do
-   -- Create a Manager
-  manager <- newManager tlsManagerSettings
-
-  -- Create a request to upload the image
-  request <- parseRequest $ "https://generativelanguage.googleapis.com/upload/v1beta/files?uploadType=media&key=" ++ unpack apiKey
-  fileContent <- BL.readFile imagePath
-  let request' = setRequestMethod "POST"
-               $ setRequestHeader "Content-Type" ["image/jpeg"]
-               $ setRequestBodyLBS fileContent request
-
-  -- Send the request and decode the JSON response
-  response <- C.httpLbs request' manager
-  let body = responseBody response
-  case decode' body of
-    Just obj -> case parseMaybe (withObject "root" (\o -> o .: "file" >>= (.: "uri"))) obj of
-      Just uri -> return $ pack uri
-      Nothing -> error "Failed to extract file URI from response"
-    Nothing -> error "Failed to decode JSON response"
-
--- Function to send the image and prompt to the model
-generateContent :: Text -> Text -> IO Text
-generateContent fileUri prompt = do
-   -- Create a Manager
-  manager <- newManager tlsManagerSettings
-
-  -- Create a request to generate content
-  let requestBody = encode $ makeBody fileUri prompt
-
-  request <- parseRequest $ "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" ++ unpack apiKey
-  let request' = setRequestMethod "POST"
-               $ setRequestHeader "Content-Type" ["application/json"]
-               $ setRequestBodyLBS requestBody request
-
-  -- Send the request and decode the JSON response
-  response <- C.httpLbs request' manager
-
-  liftIO $ putStrLn "Response Body:"
-  liftIO $ L8.putStrLn $ responseBody response
-  let body = responseBody response
-  let decoded = decode' body 
-  case decoded of
-    Just (Object obj) -> case parseMaybe (.: "generatedText") obj of
-      Just text -> return $ pack text  -- Successfully extracted the value
-      Nothing -> error "Failed to extract generated text"
-    _ -> error "Failed to decode JSON response or response is not an object"
-
+makeImagePath :: T.Text -> T.Text
+makeImagePath name = "test_images/" <> name <> ".jpeg"
 
 main :: IO ()
-main = S.scotty 3000 $ do
-
-  S.get "/" $ do
-    uri <- liftIO $ uploadImage "/workspaces/WPD-API/app/example.jpg"
-    S.text uri
-
-  S.post "/gemini" $ do
-    uri <- liftIO $ uploadImage "/workspaces/WPD-API/app/example.jpg"
-    -- S.text uri
+main = do
+    setEnvironment
     
+    apiKey <- T.pack <$> envAsString "OPENAI_API_KEY" "API key not found"
     
-    let uriPath = pack (unpack uri ) -- why this code?
-    liftIO $ putStrLn $ "Image URI: " ++ unpack uriPath
-    -- Send the image and prompt to the model
-    generatedText <- liftIO $ generateContent uriPath "อาหารในรูปคืออะไร?"
-
-    -- Print the generated text
-    S.text generatedText
-    
-    -- let url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=AIzaSyC0xCqsrg7x4HyRuRJPLaIZYvHqHKxsgm0" 
-    -- initialRequest <- liftIO $ parseRequest url
-
-    -- let requestBody = makeBody "what is 1+1"  -- JSON payload with the text question
-    
-    -- -- Set request method to POST
-    -- let request = setRequestHeader "Content-Type" ["application/json"]
-    --               $ setRequestMethod "POST"
-    --               $ setRequestBodyLBS (L8.pack requestBody) initialRequest
-
-
-    -- response <- liftIO $ httpLBS request
-
-    -- -- Print response
-    -- liftIO $ putStrLn "Response Body:"
-    -- liftIO $ L8.putStrLn $ getResponseBody response
-    -- S.text $ decodeUtf8 $ getResponseBody response
+    S.scotty 3000 $ do
+        S.get "/openai" $ do
+            let imagePath = "test_images/add1.jpeg"
+            encodedImage <- liftIO $ encodeImage imagePath
+            let prompt = foodsPrompt "ไอศกรีมสเวนเซ่น ใส่กล้วย"
+            let body = makeOpenaiBody prompt encodedImage
+            response <- liftIO $ openaiRequest body apiKey
+            S.text $ TL.pack $ maybe "No response" T.unpack response
+            liftIO $ putStrLn $ "Prompt: " ++ T.unpack prompt
+            liftIO $ putStrLn $ "Response: " ++ maybe "No response" T.unpack response
