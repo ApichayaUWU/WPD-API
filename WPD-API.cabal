@@ -62,7 +62,9 @@ executable WPD-API
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    -- other-modules:
+    other-modules:    ReadCSV
+                    , Request
+                    , Metrics
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
@@ -82,6 +84,7 @@ executable WPD-API
                     , http-conduit
                     , req
                     , aeson
+                    , aeson-pretty
                     , text
                     , bytestring
                     , time
@@ -98,3 +101,54 @@ executable WPD-API
                     , mr-env
                     , vector
                     , unordered-containers
+                    , containers
+
+-- executable Metrics
+--     -- Import common warning flags.
+--     import:           warnings
+
+--     -- .hs or .lhs file containing the Main module.
+--     main-is:          Metrics.hs
+
+--     -- Modules included in this executable, other than Main.
+--     other-modules:    ReadCSV
+--                     , Request
+--                     , Main
+                    
+
+--     -- LANGUAGE extensions used by modules in this package.
+--     -- other-extensions:
+
+--     -- Other library packages from which modules are imported.
+--     build-depends:    base ^>=4.17.2.1
+
+--     -- Directories containing source files.
+--     hs-source-dirs:   app
+
+--     -- Base language which the package is written in.
+--     default-language: Haskell2010
+
+--     -- Dependencies
+--     build-depends: base >=4.7 && <5
+--                     , scotty
+--                     , http-conduit
+--                     , req
+--                     , aeson
+--                     , aeson-pretty
+--                     , text
+--                     , bytestring
+--                     , time
+--                     , http-types
+--                     , http-client
+--                     , directory
+--                     , http-client-tls
+--                     , wai-middleware-static
+--                     , wai-extra
+--                     , dotenv
+--                     , filepath
+--                     , base64-bytestring
+--                     , cassava
+--                     , mr-env
+--                     , vector
+--                     , unordered-containers
+--                     , containers
