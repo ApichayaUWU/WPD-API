@@ -4,6 +4,8 @@
 
 module Main where
 
+import Network.Wai.Parse (fileName, fileContent, defaultParseRequestBodyOptions)
+
 import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Lazy as BL (dropWhile, drop, pack, take, ByteString, readFile, writeFile, toStrict, unpack)
 import qualified Data.ByteString.Lazy.Char8 as BL8
@@ -29,7 +31,7 @@ import MyEnvi (setEnvironment)
 import ReadCSV (Item(..), printHeaders, printItems, readCsvFile, removeBOM, processItemWithOpenAI)
 import Request ( encodeImage, foodsPrompt, makeOpenaiBody, makeGeminiBody, openaiRequest, geminiRequest)
 import Metrics (eval)
-import Web.Scotty as S (get, put, scotty, text, liftIO, param, rescue, file, middleware, files, json, setHeader)
+import Web.Scotty as S (get, post, put, scotty, text, liftIO, param, rescue, file, middleware, files, json, setHeader)
 import qualified Data.ByteString as BS
 import Network.HTTP.Client (Response(responseBody))
 import Network.HTTP.Simple (getResponseBody)
@@ -38,6 +40,18 @@ import System.IO (hSetEncoding, stdout, utf8)
 import Data.Word (Word8)
 import Network.Wai.Middleware.Timeout (timeout)
 
+import Data.Time (getCurrentTime, formatTime, defaultTimeLocale)
+import qualified Data.Text.Encoding as T
+
+
+
+
+-- non-pure function
+createImageName :: T.Text -> IO T.Text
+createImageName user = do
+  currentTime <- getCurrentTime
+  let dateStr = formatTime defaultTimeLocale "%Y%m%d%H%M%S" currentTime
+  return $ T.pack (T.unpack user ++ dateStr ++ ".jpg")
 
 writeResultsToJson :: FilePath -> [(Item, Maybe T.Text)] -> IO ()
 writeResultsToJson filePath results = do
@@ -82,11 +96,11 @@ main = do
     -- liftIO $ handleOpenaiEval "food_thai" "food_thai.csv" gptApiKey
     -- liftIO $ handleOpenaiEval "sweets" "sweets.csv" gptApiKey
 
-    Metrics.eval "results_fv.json"
-    Metrics.eval "results_drinks.json"
-    Metrics.eval "results_food_inter.json"
-    Metrics.eval "results_food_thai.json"
-    Metrics.eval "results_sweets.json"
+    -- Metrics.eval "results_fv.json"
+    -- Metrics.eval "results_drinks.json"
+    -- Metrics.eval "results_food_inter.json"
+    -- Metrics.eval "results_food_thai.json"
+    -- Metrics.eval "results_sweets.json"
 
 
 
@@ -100,6 +114,11 @@ main = do
    
     S.scotty 3000 $ do
         S.middleware $ timeout 900000000
+
+        S.get "/" $ do
+            S.setHeader "Content-Type" "text/html; charset=utf-8"
+            S.file "index.html"
+        
         S.get "/items" $ do
             S.setHeader "Content-Type" "application/json; charset=utf-8"
             csvData <- liftIO $ readCsvFile "fv_short.csv"
@@ -129,10 +148,26 @@ main = do
             liftIO $ putStrLn $ "Prompt: " ++ T.unpack prompt
             liftIO $ putStrLn $ "Response: " ++ maybe "No response" T.unpack response
 
+        S.post "/upload" $ do 
+            -- Get the uploaded file from the request
+            file <- files
+            let (fileName, fileInfo) = head file  -- Assuming only one file is uploaded
+            let content = fileContent fileInfo  -- Extract the file content
+            imageName <- liftIO $ createImageName fileName
+            let filePath = "./uploads/" ++ T.unpack imageName
+
+            -- Save the file to the uploads directory
+            liftIO $ BL.writeFile filePath content
+
+            -- Log the uploaded file path
+            liftIO $ putStrLn $ "Uploaded file: " ++ filePath
+            S.text $ TL.pack filePath
+
+
         S.get "/gemini" $ do
-            let imagePath = "test_images/add1.jpeg"
-            encodedImage <- liftIO $ encodeImage imagePath
-            let prompt = foodsPrompt "ไอศกรีมสเวนเซ่น ใส่กล้วย"
+            imagePath <- param "file"
+            encodedImage <- liftIO $ encodeImage (T.unpack imagePath)
+            let prompt = foodsPrompt "อาหารชื่ออะไร บอกมาด้วย"
             let body = makeGeminiBody prompt encodedImage
             response <- liftIO $ geminiRequest body geminiApiKey
             S.text $ TL.pack $ maybe "No response" T.unpack response
